@@ -66,6 +66,45 @@
   function sortTasks(tasks: Task[]) {
     return [...tasks].sort((a, b) => a.text.localeCompare(b.text));
   }
+
+  function handleDrop(e: DragEvent, newDate: string) {
+    const data = e.dataTransfer?.getData('application/json');
+    if (!data) return;
+
+    const droppedTask = JSON.parse(data);
+    const index = tasks.findIndex(
+      (t) => t.text === droppedTask.text && t.date === droppedTask.date
+    );
+    if (index === -1) return;
+
+    tasks[index].date = newDate;
+    tasks = [...tasks]; // trigger reactivity
+  }
+
+  function getPastDate() {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().split('T')[0];
+  }
+
+  function getUpcomingDate() {
+    const d = new Date();
+    d.setDate(d.getDate() + 2);
+    return d.toISOString().split('T')[0];
+  }
+
+  function formatDateWithDayName(dateString: string): string {
+    const options: Intl.DateTimeFormatOptions = {
+      weekday: 'long',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    };
+    const date = new Date(dateString);
+    const formatter = new Intl.DateTimeFormat('en-GB', options); // DD-MM-YYYY
+    return formatter.format(date);
+  }
+
 </script>
 
 <div class="flex flex-col m-4 p-4 items-center justify-center">
@@ -94,8 +133,15 @@
   <div class="grid grid-cols-1 md:grid-cols-4 gap-6 w-full">
 
     <!-- Past -->
-    <div>
-      <h2 class="text-lg font-semibold mb-2">⏪ Past / Done</h2>
+    <div 
+      role="region"
+      aria-label="Drop zone for Past tasks"
+      on:dragover|preventDefault
+      on:drop={(e) => handleDrop(e, getPastDate())}
+    >
+      <h2 class="text-lg font-semibold mb-2">
+        ⏪ Past / Done
+      </h2>    
       {#each sortTasks(getPastTasks()).map((t, i) => ({...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
         <TaskItem
           {task}
@@ -108,8 +154,15 @@
     </div>
 
     <!-- Today -->
-    <div>
-      <h2 class="text-lg font-semibold mb-2">📅 Today ({today})</h2>
+    <div
+      role="region" 
+      aria-label="Drop zone for Today"
+      on:dragover|preventDefault
+      on:drop={(e) => handleDrop(e, today)}
+    >
+      <h2 class="text-lg font-semibold mb-2">
+        📅 Today ({formatDateWithDayName(today)})
+      </h2>    
       {#each getTasksByDate(today).map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
         <TaskItem
           {task}
@@ -123,8 +176,15 @@
 
 
     <!-- Tomorrow -->
-    <div>
-      <h2 class="text-lg font-semibold mb-2">🕒 Tomorrow ({tomorrow})</h2>
+    <div
+      role="region" 
+      aria-label="Drop zone for Tomorrow"
+      on:dragover|preventDefault
+      on:drop={(e) => handleDrop(e, tomorrow)}
+    >
+      <h2 class="text-lg font-semibold mb-2">
+        🕒 Tomorrow ({formatDateWithDayName(tomorrow)})
+      </h2>    
       {#each getTasksByDate(tomorrow).map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
         <TaskItem
           {task}
@@ -138,8 +198,15 @@
 
 
     <!-- Future -->
-    <div>
-      <h2 class="text-lg font-semibold mb-2">🔜 Upcoming</h2>
+    <div
+      role="region" 
+      aria-label="Drop zone for Future"
+      on:dragover|preventDefault
+      on:drop={(e) => handleDrop(e, getUpcomingDate())}
+    >
+      <h2 class="text-lg font-semibold mb-2">
+        🔜 Upcoming ({formatDateWithDayName(getUpcomingDate())})
+      </h2>    
       {#each getFutureTasks().map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
         <TaskItem
           {task}
