@@ -1,222 +1,313 @@
+<!-- PATH = src\routes\+page.svelte -->
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { browser } from '$app/environment';
-  import TaskItem from '$lib/TaskItem.svelte';
+	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
+	import TaskItem from '$lib/TaskItem.svelte';
+	import { writable } from 'svelte/store';
+	import {
+		auth,
+		GoogleAuthProvider,
+		signInWithPopup,
+		signOut,
+		onAuthStateChanged,
+		type User,
+		doc,
+		setDoc,
+		db,
+		getDoc
+	} from '$lib/firebase';
+	import { todos, user } from '$lib/stores/user';
+	import { get } from 'svelte/store';
 
-  type Task = {
-    text: string;
-    done: boolean;
-    date: string; // 'YYYY-MM-DD'
-  };
+	let tasks: Task[] = [];
 
-  let tasks: Task[] = [];
-  let newTask = '';
-  let newTaskDate = new Date().toISOString().split('T')[0]; // today
-  let initialized = false;
+	onMount(() => {
+		if (browser) {
+			const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+				if (firebaseUser) {
+					// Firebase user is logged in
+					const docRef = doc(db, 'todos', firebaseUser.uid);
+					const docSnap = await getDoc(docRef);
 
-  // Cache today and tomorrow as reactive values
-  $: today = new Date().toISOString().split('T')[0];
-  $: tomorrow = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return d.toISOString().split('T')[0];
-  })();
+					const localTasks = JSON.parse(localStorage.getItem('todos') || '[]');
+					if (docSnap.exists()) {
+						const firestoreTasks: Task[] = docSnap.data().items || [];
+						// Merge Firestore tasks and localStorage tasks if mismatch
+						const mergedTasks: Task[] = [
+							...firestoreTasks,
+							...localTasks.filter(
+								(localTask: { text: any }) =>
+									!firestoreTasks.some((fsTask) => fsTask.text === localTask.text)
+							)
+						];
+						tasks = mergedTasks;
+						// Save merged tasks back to Firestore and localStorage
+						await setDoc(docRef, { items: mergedTasks }, { merge: true });
+						localStorage.setItem('todos', JSON.stringify(mergedTasks));
+					} else {
+						// If no tasks in Firestore, use localStorage tasks
+						tasks = localTasks;
+						await setDoc(docRef, { items: localTasks }, { merge: true });
+					}
+				} else {
+					// If no user is logged in, use localStorage
+					const savedTasks = localStorage.getItem('todos');
+					tasks = savedTasks ? JSON.parse(savedTasks) : [];
+				}
+				user.set(firebaseUser);
+			});
+			return () => unsubscribe();
+		}
+	});
 
-  onMount(() => {
-    if (browser) {
-      const saved = localStorage.getItem('tasks');
-      if (saved) tasks = JSON.parse(saved);
-      initialized = true;
-    }
-  });
+	$: if (browser) {
+		localStorage.setItem('todos', JSON.stringify(tasks));
+	}
 
-  $: if (browser && initialized) {
-    localStorage.setItem('tasks', JSON.stringify(tasks));
-  }
+	async function login() {
+		const provider = new GoogleAuthProvider();
+		try {
+			await signInWithPopup(auth, provider);
+		} catch (err) {
+			console.error('Login error:', err);
+			alert('An error occurred during login. Please try again.');
+		}
+	}
 
-  function addTask() {
-    if (newTask.trim() && newTaskDate) {
-      tasks = [...tasks, { text: newTask, done: false, date: newTaskDate }];
-      newTask = '';
-    }
-  }
+	async function logout() {
+		try {
+			if (auth.currentUser) {
+				const firebaseUser = auth.currentUser;
+				const docRef = doc(db, 'todos', firebaseUser.uid);
+				await setDoc(docRef, { items: tasks });
+			}
+			localStorage.setItem('todos', JSON.stringify(tasks));
+			await signOut(auth);
+			tasks = [];
+		} catch (err) {
+			console.error('Logout error:', err);
+			alert('An error occurred during logout. Please try again.');
+		}
+	}
 
-  function toggleTask(index: number) {
-    tasks = tasks.map((task, i) =>
-      i === index ? { ...task, done: !task.done } : task
-    );
-  }
+	type Task = {
+		text: string;
+		done: boolean;
+		date: string;
+	};
 
-  function deleteTask(index: number) {
-    tasks = tasks.filter((_, i) => i !== index);
-  }
+	let newTask = '';
+	let newTaskDate = new Date().toISOString().split('T')[0];
 
-  function getTasksByDate(date: string) {
-    return tasks.filter((t) => t.date === date);
-  }
+	$: today = new Date().toISOString().split('T')[0];
+	$: tomorrow = (() => {
+		const d = new Date();
+		d.setDate(d.getDate() + 1);
+		return d.toISOString().split('T')[0];
+	})();
 
-  function getFutureTasks() {
-    return tasks.filter(t => t.date > tomorrow);
-  }
+	function addTask() {
+		if (newTask.trim() && newTaskDate) {
+			tasks = [...tasks, { text: newTask, done: false, date: newTaskDate }];
+			newTask = '';
+			if (auth.currentUser) {
+				const firebaseUser = auth.currentUser;
+				const docRef = doc(db, 'todos', firebaseUser.uid);
+				setDoc(docRef, { items: tasks });
+			}
+		}
+	}
 
-  function getPastTasks() {
-    return tasks.filter(t => t.date < today);
-  }
+	async function toggleTask(index: number) {
+		tasks = tasks.map((task, i) => (i === index ? { ...task, done: !task.done } : task));
+		if (auth.currentUser) {
+			const firebaseUser = auth.currentUser;
+			const docRef = doc(db, 'todos', firebaseUser.uid);
+			await setDoc(docRef, { items: tasks });
+		} else {
+			localStorage.setItem('todos', JSON.stringify(tasks));
+		}
+	}
 
-  function sortTasks(tasks: Task[]) {
-    return [...tasks].sort((a, b) => a.text.localeCompare(b.text));
-  }
+	async function deleteTask(index: number) {
+		tasks = tasks.filter((_, i) => i !== index);
+		if (auth.currentUser) {
+			const firebaseUser = auth.currentUser;
+			const docRef = doc(db, 'todos', firebaseUser.uid);
+			await setDoc(docRef, { items: tasks });
+		} else {
+			localStorage.setItem('todos', JSON.stringify(tasks));
+		}
+	}
 
-  function handleDrop(e: DragEvent, newDate: string) {
-    const data = e.dataTransfer?.getData('application/json');
-    if (!data) return;
+	function getTasksByDate(date: string) {
+		return tasks.filter((t) => t.date === date);
+	}
 
-    const droppedTask = JSON.parse(data);
-    const index = tasks.findIndex(
-      (t) => t.text === droppedTask.text && t.date === droppedTask.date
-    );
-    if (index === -1) return;
+	function getFutureTasks() {
+		return tasks.filter((t) => t.date > tomorrow);
+	}
 
-    tasks[index].date = newDate;
-    tasks = [...tasks]; // trigger reactivity
-  }
+	function getPastTasks() {
+		return tasks.filter((t) => t.date < today);
+	}
 
-  function getPastDate() {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().split('T')[0];
-  }
+	function sortTasks(tasks: Task[]) {
+		return [...tasks].sort((a, b) => a.text.localeCompare(b.text));
+	}
 
-  function getUpcomingDate() {
-    const d = new Date();
-    d.setDate(d.getDate() + 2);
-    return d.toISOString().split('T')[0];
-  }
+	async function handleDrop(e: DragEvent, newDate: string) {
+		const data = e.dataTransfer?.getData('application/json');
+		if (!data) return;
 
-  function formatDateWithDayName(dateString: string): string {
-    const options: Intl.DateTimeFormatOptions = {
-      weekday: 'long',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    };
-    const date = new Date(dateString);
-    const formatter = new Intl.DateTimeFormat('en-GB', options); // DD-MM-YYYY
-    return formatter.format(date);
-  }
+		const droppedTask = JSON.parse(data);
+		const index = tasks.findIndex(
+			(t) => t.text === droppedTask.text && t.date === droppedTask.date
+		);
+		if (index === -1) return;
 
+		tasks[index].date = newDate;
+		tasks = [...tasks];
+
+		if (auth.currentUser) {
+			const firebaseUser = auth.currentUser;
+			const docRef = doc(db, 'todos', firebaseUser.uid);
+			await setDoc(docRef, { items: tasks });
+		} else {
+			localStorage.setItem('todos', JSON.stringify(tasks));
+		}
+	}
+
+	function getPastDate() {
+		const d = new Date();
+		d.setDate(d.getDate() - 1);
+		return d.toISOString().split('T')[0];
+	}
+
+	function getUpcomingDate() {
+		const d = new Date();
+		d.setDate(d.getDate() + 2);
+		return d.toISOString().split('T')[0];
+	}
+
+	function formatDateWithDayName(dateString: string): string {
+		const options: Intl.DateTimeFormatOptions = {
+			weekday: 'long',
+			day: '2-digit',
+			month: '2-digit',
+			year: 'numeric'
+		};
+		const date = new Date(dateString);
+		const formatter = new Intl.DateTimeFormat('en-GB', options);
+		return formatter.format(date);
+	}
 </script>
 
-<div class="flex flex-col m-4 p-4 items-center justify-center">
-  <h1 class="text-2xl font-bold mb-4">📝 My To-Do App</h1>
+<div class="m-4 flex flex-col items-center justify-center p-4">
+	<h1 class="mb-4 text-2xl font-bold">📝 My To-Do App</h1>
+	{#if $user}
+		<div class="mb-4 flex w-full items-center justify-between px-4">
+			<p class="text-md text-gray-700">Hi, {$user.displayName || 'User'}</p>
+			<button on:click={logout} class="rounded bg-red-500 px-3 py-1 text-white hover:bg-red-600"
+				>Logout</button
+			>
+		</div>
+	{:else}
+		<div class="mb-4 flex w-full justify-end px-4">
+			<button on:click={login} class="rounded bg-green-500 px-3 py-1 text-white hover:bg-green-600">
+				Login with Google
+			</button>
+		</div>
+	{/if}
 
-  <div class="flex flex-wrap gap-2 items-center justify-center mb-4">
-    <input
-      class="border rounded-md px-2 py-1"
-      bind:value={newTask}
-      placeholder="Add a task"
-      on:keydown={(e) => e.key === 'Enter' && addTask()}
-    />
-    <input
-      type="date"
-      class="border rounded-md px-2 py-1"
-      bind:value={newTaskDate}
-    />
-    <button
-      on:click={addTask}
-      class="bg-blue-500 text-white px-4 py-1 rounded-md hover:bg-blue-600"
-    >
-      Add
-    </button>
-  </div>
+	<div class="mb-4 flex flex-wrap items-center justify-center gap-2">
+		<input
+			class="rounded-md border px-2 py-1"
+			bind:value={newTask}
+			placeholder="Add a task"
+			on:keydown={(e) => e.key === 'Enter' && addTask()}
+		/>
+		<input type="date" class="rounded-md border px-2 py-1" bind:value={newTaskDate} />
+		<button on:click={addTask} class="rounded-md bg-blue-500 px-4 py-1 text-white hover:bg-blue-600"
+			>Add</button
+		>
+	</div>
 
-  <div class="grid grid-cols-1 md:grid-cols-4 gap-6 w-full">
+	<div class="grid w-full grid-cols-1 gap-6 md:grid-cols-4">
+		<!-- Past -->
+		<div
+			role="region"
+			aria-label="Drop zone for Past tasks"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, getPastDate())}
+		>
+			<h2 class="mb-2 text-lg font-semibold">⏪ Past / Done</h2>
+			{#each sortTasks(getPastTasks()).map( (t, i) => ({ ...t, _originalIndex: tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No past tasks</p>
+			{/each}
+		</div>
 
-    <!-- Past -->
-    <div 
-      role="region"
-      aria-label="Drop zone for Past tasks"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, getPastDate())}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        ⏪ Past / Done
-      </h2>    
-      {#each sortTasks(getPastTasks()).map((t, i) => ({...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No past tasks</p>
-      {/each}
-    </div>
+		<!-- Today -->
+		<div
+			role="region"
+			aria-label="Drop zone for Today"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, today)}
+		>
+			<h2 class="mb-2 text-lg font-semibold">📅 Today</h2>
+			{#each sortTasks(getTasksByDate(today)).map( (t, i) => ({ ...t, _originalIndex: tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No tasks today</p>
+			{/each}
+		</div>
 
-    <!-- Today -->
-    <div
-      role="region" 
-      aria-label="Drop zone for Today"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, today)}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        📅 Today ({formatDateWithDayName(today)})
-      </h2>    
-      {#each getTasksByDate(today).map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No tasks</p>
-      {/each}
-    </div>
+		<!-- Tomorrow -->
+		<div
+			role="region"
+			aria-label="Drop zone for Tomorrow"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, tomorrow)}
+		>
+			<h2 class="mb-2 text-lg font-semibold">📆 Tomorrow</h2>
+			{#each sortTasks(getTasksByDate(tomorrow)).map( (t, i) => ({ ...t, _originalIndex: tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No tasks for tomorrow</p>
+			{/each}
+		</div>
 
-
-    <!-- Tomorrow -->
-    <div
-      role="region" 
-      aria-label="Drop zone for Tomorrow"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, tomorrow)}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        🕒 Tomorrow ({formatDateWithDayName(tomorrow)})
-      </h2>    
-      {#each getTasksByDate(tomorrow).map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No tasks</p>
-      {/each}
-    </div>
-
-
-    <!-- Future -->
-    <div
-      role="region" 
-      aria-label="Drop zone for Future"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, getUpcomingDate())}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        🔜 Upcoming ({formatDateWithDayName(getUpcomingDate())})
-      </h2>    
-      {#each getFutureTasks().map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No upcoming tasks</p>
-      {/each}
-    </div>
-
-  </div>
+		<!-- Upcoming -->
+		<div
+			role="region"
+			aria-label="Drop zone for Upcoming tasks"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, getUpcomingDate())}
+		>
+			<h2 class="mb-2 text-lg font-semibold">🔜 Upcoming</h2>
+			{#each sortTasks(getFutureTasks()).map( (t, i) => ({ ...t, _originalIndex: tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No upcoming tasks</p>
+			{/each}
+		</div>
+	</div>
 </div>
