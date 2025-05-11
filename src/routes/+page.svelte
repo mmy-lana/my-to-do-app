@@ -8,6 +8,8 @@
 	import { user } from '$lib/stores/user';
 	import type { Task } from '$lib/types';
 	import { get } from 'svelte/store';
+	import { signInWithRedirect } from '@firebase/auth';
+	import { Provider } from '@firebase/component';
 
 	let newTask = '';
 	let newTaskDate = new Date().toISOString().split('T')[0];
@@ -77,9 +79,15 @@
 		await updateTasks(updated);
 	}
 
-	async function login() {
+	export async function login() {
 		try {
-			await signInWithPopup(auth, new GoogleAuthProvider());
+			const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+			if (isMobile) {
+				await signInWithRedirect(auth, new GoogleAuthProvider());
+			} else {
+				await signInWithPopup(auth, new GoogleAuthProvider());
+			}
 		} catch (err) {
 			console.error('Login error:', err);
 			alert('Login failed');
