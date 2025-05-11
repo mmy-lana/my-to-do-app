@@ -1,222 +1,207 @@
+<!-- src/routes/+page.svelte -->
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { browser } from '$app/environment';
-  import TaskItem from '$lib/TaskItem.svelte';
+	import { onMount } from 'svelte';
+	import { browser } from '$app/environment';
+	import TaskItem from '$lib/TaskItem.svelte';
+	import { tasks, fetchTasks, updateTasks } from '$lib/stores/taskManager';
+	import { auth, GoogleAuthProvider, signInWithPopup, signOut } from '$lib/firebase';
+	import { user } from '$lib/stores/user';
+	import type { Task } from '$lib/types';
+	import { get } from 'svelte/store';
 
-  type Task = {
-    text: string;
-    done: boolean;
-    date: string; // 'YYYY-MM-DD'
-  };
+	let newTask = '';
+	let newTaskDate = new Date().toISOString().split('T')[0];
 
-  let tasks: Task[] = [];
-  let newTask = '';
-  let newTaskDate = new Date().toISOString().split('T')[0]; // today
-  let initialized = false;
+	// ✅ wait for auth before fetching tasks
+	onMount(() => {
+		auth.onAuthStateChanged(async (u) => {
+			user.set(u);
+			await fetchTasks();
+		});
+	});
 
-  // Cache today and tomorrow as reactive values
-  $: today = new Date().toISOString().split('T')[0];
-  $: tomorrow = (() => {
-    const d = new Date();
-    d.setDate(d.getDate() + 1);
-    return d.toISOString().split('T')[0];
-  })();
+	$: today = new Date().toISOString().split('T')[0];
+	$: tomorrow = new Date(new Date().setDate(new Date().getDate() + 1)).toISOString().split('T')[0];
 
-  onMount(() => {
-    if (browser) {
-      const saved = localStorage.getItem('tasks');
-      if (saved) tasks = JSON.parse(saved);
-      initialized = true;
-    }
-  });
+	const getPastDate = () =>
+		new Date(new Date().setDate(new Date().getDate() - 1)).toISOString().split('T')[0];
+	const getUpcomingDate = () =>
+		new Date(new Date().setDate(new Date().getDate() + 2)).toISOString().split('T')[0];
 
-  $: if (browser && initialized) {
-    localStorage.setItem('tasks', JSON.stringify(tasks));
-  }
+	function sortTasks(arr: Task[]) {
+		return [...arr].sort((a, b) => a.text.localeCompare(b.text));
+	}
 
-  function addTask() {
-    if (newTask.trim() && newTaskDate) {
-      tasks = [...tasks, { text: newTask, done: false, date: newTaskDate }];
-      newTask = '';
-    }
-  }
+	function getTasksByDate(date: string) {
+		return get(tasks).filter((t) => t.date === date);
+	}
 
-  function toggleTask(index: number) {
-    tasks = tasks.map((task, i) =>
-      i === index ? { ...task, done: !task.done } : task
-    );
-  }
+	function getPastTasks() {
+		return get(tasks).filter((t) => t.date < today);
+	}
 
-  function deleteTask(index: number) {
-    tasks = tasks.filter((_, i) => i !== index);
-  }
+	function getFutureTasks() {
+		return get(tasks).filter((t) => t.date > tomorrow);
+	}
 
-  function getTasksByDate(date: string) {
-    return tasks.filter((t) => t.date === date);
-  }
+	function addTask() {
+		if (newTask.trim()) {
+			const newTasks = [...get(tasks), { text: newTask, done: false, date: newTaskDate }];
+			updateTasks(newTasks);
+			newTask = '';
+		}
+	}
 
-  function getFutureTasks() {
-    return tasks.filter(t => t.date > tomorrow);
-  }
+	async function toggleTask(index: number) {
+		const updated = get(tasks).map((t, i) => (i === index ? { ...t, done: !t.done } : t));
+		await updateTasks(updated);
+	}
 
-  function getPastTasks() {
-    return tasks.filter(t => t.date < today);
-  }
+	async function deleteTask(index: number) {
+		const updated = get(tasks).filter((_, i) => i !== index);
+		await updateTasks(updated);
+	}
 
-  function sortTasks(tasks: Task[]) {
-    return [...tasks].sort((a, b) => a.text.localeCompare(b.text));
-  }
+	async function handleDrop(e: DragEvent, newDate: string) {
+		const data = e.dataTransfer?.getData('application/json');
+		if (!data) return;
+		const droppedTask: Task = JSON.parse(data);
 
-  function handleDrop(e: DragEvent, newDate: string) {
-    const data = e.dataTransfer?.getData('application/json');
-    if (!data) return;
+		const index = get(tasks).findIndex(
+			(t) => t.text === droppedTask.text && t.date === droppedTask.date
+		);
+		if (index === -1) return;
 
-    const droppedTask = JSON.parse(data);
-    const index = tasks.findIndex(
-      (t) => t.text === droppedTask.text && t.date === droppedTask.date
-    );
-    if (index === -1) return;
+		const updated = [...get(tasks)];
+		updated[index].date = newDate;
+		await updateTasks(updated);
+	}
 
-    tasks[index].date = newDate;
-    tasks = [...tasks]; // trigger reactivity
-  }
+	async function login() {
+		try {
+			await signInWithPopup(auth, new GoogleAuthProvider());
+		} catch (err) {
+			console.error('Login error:', err);
+			alert('Login failed');
+		}
+	}
 
-  function getPastDate() {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().split('T')[0];
-  }
-
-  function getUpcomingDate() {
-    const d = new Date();
-    d.setDate(d.getDate() + 2);
-    return d.toISOString().split('T')[0];
-  }
-
-  function formatDateWithDayName(dateString: string): string {
-    const options: Intl.DateTimeFormatOptions = {
-      weekday: 'long',
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    };
-    const date = new Date(dateString);
-    const formatter = new Intl.DateTimeFormat('en-GB', options); // DD-MM-YYYY
-    return formatter.format(date);
-  }
-
+	async function logout() {
+		await updateTasks(get(tasks)); // save before logout
+		await signOut(auth);
+		tasks.set([]);
+	}
 </script>
 
-<div class="flex flex-col m-4 p-4 items-center justify-center">
-  <h1 class="text-2xl font-bold mb-4">📝 My To-Do App</h1>
+<div class="m-4 flex flex-col items-center justify-center p-4">
+	<h1 class="mb-4 text-2xl font-bold">📝 My To-Do App</h1>
 
-  <div class="flex flex-wrap gap-2 items-center justify-center mb-4">
-    <input
-      class="border rounded-md px-2 py-1"
-      bind:value={newTask}
-      placeholder="Add a task"
-      on:keydown={(e) => e.key === 'Enter' && addTask()}
-    />
-    <input
-      type="date"
-      class="border rounded-md px-2 py-1"
-      bind:value={newTaskDate}
-    />
-    <button
-      on:click={addTask}
-      class="bg-blue-500 text-white px-4 py-1 rounded-md hover:bg-blue-600"
-    >
-      Add
-    </button>
-  </div>
+	{#if $user}
+		<div class="mb-4 flex w-full items-center justify-between px-4">
+			<p class="text-md text-gray-700">Hi, {$user.displayName || 'User'}</p>
+			<button on:click={logout} class="rounded bg-red-500 px-3 py-1 text-white hover:bg-red-600">
+				Logout
+			</button>
+		</div>
+	{:else}
+		<div class="mb-4 flex w-full justify-end px-4">
+			<button on:click={login} class="rounded bg-green-500 px-3 py-1 text-white hover:bg-green-600">
+				Login with Google
+			</button>
+		</div>
+	{/if}
 
-  <div class="grid grid-cols-1 md:grid-cols-4 gap-6 w-full">
+	<div class="mb-4 flex flex-wrap items-center justify-center gap-2">
+		<input
+			class="rounded-md border px-2 py-1"
+			bind:value={newTask}
+			placeholder="Add a task"
+			on:keydown={(e) => e.key === 'Enter' && addTask()}
+		/>
+		<input type="date" class="rounded-md border px-2 py-1" bind:value={newTaskDate} />
+		<button
+			on:click={addTask}
+			class="rounded-md bg-blue-500 px-4 py-1 text-white hover:bg-blue-600"
+		>
+			Add
+		</button>
+	</div>
 
-    <!-- Past -->
-    <div 
-      role="region"
-      aria-label="Drop zone for Past tasks"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, getPastDate())}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        ⏪ Past / Done
-      </h2>    
-      {#each sortTasks(getPastTasks()).map((t, i) => ({...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No past tasks</p>
-      {/each}
-    </div>
+	<div class="grid w-full grid-cols-1 gap-6 md:grid-cols-4">
+		<!-- Past -->
+		<div
+			role="region"
+			aria-label="Drop zone for Past tasks"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, getPastDate())}
+		>
+			<h2 class="mb-2 text-lg font-semibold">⏪ Past / Done</h2>
+			{#each sortTasks($tasks.filter((t) => t.date < today)).map( (t) => ({ ...t, _originalIndex: $tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No past tasks</p>
+			{/each}
+		</div>
 
-    <!-- Today -->
-    <div
-      role="region" 
-      aria-label="Drop zone for Today"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, today)}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        📅 Today ({formatDateWithDayName(today)})
-      </h2>    
-      {#each getTasksByDate(today).map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No tasks</p>
-      {/each}
-    </div>
+		<!-- Today -->
+		<div
+			role="region"
+			aria-label="Drop zone for Today"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, today)}
+		>
+			<h2 class="mb-2 text-lg font-semibold">📅 Today</h2>
+			{#each sortTasks($tasks.filter((t) => t.date === today)).map( (t) => ({ ...t, _originalIndex: $tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No tasks today</p>
+			{/each}
+		</div>
 
+		<!-- Tomorrow -->
+		<div
+			role="region"
+			aria-label="Drop zone for Tomorrow"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, tomorrow)}
+		>
+			<h2 class="mb-2 text-lg font-semibold">📆 Tomorrow</h2>
+			{#each sortTasks($tasks.filter((t) => t.date === tomorrow)).map( (t) => ({ ...t, _originalIndex: $tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No tasks for tomorrow</p>
+			{/each}
+		</div>
 
-    <!-- Tomorrow -->
-    <div
-      role="region" 
-      aria-label="Drop zone for Tomorrow"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, tomorrow)}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        🕒 Tomorrow ({formatDateWithDayName(tomorrow)})
-      </h2>    
-      {#each getTasksByDate(tomorrow).map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No tasks</p>
-      {/each}
-    </div>
-
-
-    <!-- Future -->
-    <div
-      role="region" 
-      aria-label="Drop zone for Future"
-      on:dragover|preventDefault
-      on:drop={(e) => handleDrop(e, getUpcomingDate())}
-    >
-      <h2 class="text-lg font-semibold mb-2">
-        🔜 Upcoming ({formatDateWithDayName(getUpcomingDate())})
-      </h2>    
-      {#each getFutureTasks().map((t) => ({ ...t, _originalIndex: tasks.findIndex(task => task.text === t.text && task.date === t.date) })) as task}
-        <TaskItem
-          {task}
-          toggle={() => toggleTask(task._originalIndex)}
-          remove={() => deleteTask(task._originalIndex)}
-        />
-      {:else}
-        <p class="text-sm text-gray-500">No upcoming tasks</p>
-      {/each}
-    </div>
-
-  </div>
+		<!-- Upcoming -->
+		<div
+			role="region"
+			aria-label="Drop zone for Upcoming tasks"
+			on:dragover|preventDefault
+			on:drop={(e) => handleDrop(e, getUpcomingDate())}
+		>
+			<h2 class="mb-2 text-lg font-semibold">🔜 Upcoming</h2>
+			{#each sortTasks($tasks.filter((t) => t.date > tomorrow)).map( (t) => ({ ...t, _originalIndex: $tasks.findIndex((task) => task.text === t.text && task.date === t.date) }) ) as task}
+				<TaskItem
+					{task}
+					toggle={() => toggleTask(task._originalIndex)}
+					remove={() => deleteTask(task._originalIndex)}
+				/>
+			{:else}
+				<p class="text-sm text-gray-500">No upcoming tasks</p>
+			{/each}
+		</div>
+	</div>
 </div>
